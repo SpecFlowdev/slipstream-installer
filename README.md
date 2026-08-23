@@ -69,7 +69,7 @@ With the SOCKS5 proxy enabled, two more:
 
 ## Connecting to it
 
-This repository installs and configures the **server only**. The client is a separate project with its own repository and its own documentation.
+This repository installs and configures the **server only**. The client is a separate project: [SpecFlowdev/slipstream-client](https://github.com/SpecFlowdev/slipstream-client) — a desktop app for Linux and Windows, with its own downloads and documentation.
 
 Everything a client needs is produced here, and the installer prints all of it when it finishes:
 
