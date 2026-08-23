@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 
 - **Linux with systemd**, x86_64 or arm64
 - **Root**, to install the service and bind the DNS port
-- **A domain you control**, whose `NS` record can be pointed at this host
+- **A domain you control**, whose `NS` record can be pointed at this host. Keep it short: the client's payload per query is `(240 − domain length) / 1.6` bytes, so a shorter domain is a faster tunnel
 - **UDP reachable** on the listen port, port 53 by default
 
 ---
@@ -96,6 +96,8 @@ Without the proxy, that port is a plain TCP forward to whatever target you chose
 **Certificates.** The server generates a self-signed P-256 certificate on first start, and the client pins that exact leaf. No CA is trusted and no ACME challenge port is exposed.
 
 **The tunnel does not authenticate clients.** Certificate pinning proves the *server's* identity to the client, not the other way round — the server accepts any client that completes the handshake. Anyone who learns your tunnel domain can therefore open a connection and reach whatever sits at the forwarding target. That is why the SOCKS5 proxy is installed with a username and a 24-character random password, generated at install time and saved to `/etc/slipstream/socks-credentials`. Point the tunnel at a target of your own instead and that service needs access control of its own.
+
+**Keeping the domain secret is not a control.** Delegating the zone by `NS` publishes it by construction, and queries reach you through whichever recursive resolvers your clients use, so filtering by source address is not available either. A long random subdomain does not fix that — sustained tunnel traffic surfaces in passive DNS anyway — and it costs throughput directly: the client's payload per query is `(240 − domain length) / 1.6` bytes, so every extra character is bandwidth given up. Treat the authentication on the forwarding target as the security boundary, not the domain.
 
 **The proxy is not exposed directly.** `microsocks` binds `127.0.0.1` only, so it is never reachable from the network — just through the tunnel, or from the host. It runs under `DynamicUser`, a throwaway identity with an empty capability set and no access to the server's private key. The password is kept out of `ps` by microsocks itself and out of world-readable files by mode `0640` on the unit, though any local user on the host can still reach the proxy port.
 
