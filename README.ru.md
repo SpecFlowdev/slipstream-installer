@@ -38,6 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 
 ## Зачем этот установщик
 
+- **Готов к работе сразу** — предлагает поставить SOCKS5-прокси как цель туннеля, так что локальный порт клиента сразу работает прокси, а не смотрит в порт, за которым ничего нет.
 - **Без компиляции** — ставится готовый бинарник из релиза. Сборка slipstream из исходников тянет picoquic, picotls и OpenSSL через CMake; здесь всё занимает секунды.
 - **Спрашивает, а не угадывает** — домен и цель форвардинга запрашиваются при запуске, так что ошибиться в командной строке негде. Ввод читается напрямую с терминала, поэтому работает даже через `curl | bash`.
 - **Вшитые контрольные суммы** — SHA256 каждого архива зашит в скрипт, а не просто скачивается рядом с архивом.
@@ -57,6 +58,26 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 | `/var/lib/slipstream/reset-seed` | Seed для stateless reset, переживает перезапуски |
 | `/etc/systemd/system/slipstream-server.service` | Unit сервиса |
 
+Если включён SOCKS5-прокси, добавляется ещё два:
+
+| Путь | Содержимое |
+| --- | --- |
+| `/usr/bin/microsocks` | SOCKS5-сервер, ставится из репозиториев дистрибутива |
+| `/etc/systemd/system/slipstream-socks.service` | Unit прокси, слушает только loopback |
+
+---
+
+## Как пользоваться туннелем
+
+Запустите клиента на своей машине с сертификатом, скопированным с сервера:
+
+```sh
+slipstream-client --domain t.example.com --resolver <resolver-ip:53> \
+    --cert ./cert.pem --tcp-listen-port 7000
+```
+
+Если SOCKS5-прокси установлен, укажите приложениям `127.0.0.1:7000` как **SOCKS5-прокси** — трафик пойдёт через сервер. Без прокси этот порт остаётся простым TCP-форвардом на выбранную вами цель.
+
 ---
 
 ## Безопасность
@@ -70,6 +91,8 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 **Docker нет — намеренно.** Upstream не публикует контейнерный образ. Установка через Docker добавила бы в поверхность атаки root-эквивалентный сокет демона, ничего не выиграв по сравнению с изоляцией выше.
 
 **Сертификаты.** Сервер при первом старте генерирует self-signed сертификат на P-256, а клиент пиннит именно этот leaf. Никакому CA доверять не нужно, порт под ACME-проверку открывать тоже.
+
+**Прокси наружу не смотрит.** `microsocks` слушает только `127.0.0.1`, то есть доступен через туннель и с самого хоста — но не из сети; поэтому собственная авторизация ему не нужна. Работает под `DynamicUser` — одноразовая учётка с пустым набором capabilities и без доступа к приватному ключу сервера. Учтите: любой локальный пользователь хоста тоже сможет им воспользоваться — на общей машине ограничьте доступ или откажитесь от прокси.
 
 ---
 
@@ -86,12 +109,13 @@ systemctl restart slipstream-server     # перезапуск
 ## Удаление
 
 ```sh
-sudo systemctl disable --now slipstream-server
-sudo rm -f /etc/systemd/system/slipstream-server.service
+sudo systemctl disable --now slipstream-server slipstream-socks
+sudo rm -f /etc/systemd/system/slipstream-{server,socks}.service
 sudo systemctl daemon-reload
 sudo rm -f /usr/local/bin/slipstream-{server,client}
 sudo rm -rf /etc/slipstream /var/lib/slipstream
 sudo userdel slipstream
+sudo apt-get remove -y microsocks    # только если ставили прокси
 ```
 
 ---

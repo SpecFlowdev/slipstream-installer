@@ -38,6 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 
 ## Why this installer
 
+- **Usable the moment it finishes** — offers to install a SOCKS5 proxy as the tunnel's target, so the client's local port works as a proxy straight away instead of pointing at a port with nothing behind it.
 - **No compiling** — installs a prebuilt release binary. Building slipstream from source pulls in picoquic, picotls and OpenSSL through CMake; this takes seconds instead.
 - **Asks, doesn't guess** — the domain and forwarding target are prompted at runtime, so there is no command line to get wrong. Prompts read from the terminal directly, so they work even through `curl | bash`.
 - **Pinned checksums** — the SHA256 of each release archive is baked into the script, not just fetched next to the download.
@@ -57,6 +58,26 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 | `/var/lib/slipstream/reset-seed` | Stateless-reset seed, preserved across restarts |
 | `/etc/systemd/system/slipstream-server.service` | Service unit |
 
+With the SOCKS5 proxy enabled, two more:
+
+| Path | Contents |
+| --- | --- |
+| `/usr/bin/microsocks` | SOCKS5 server, installed from the distribution's packages |
+| `/etc/systemd/system/slipstream-socks.service` | Proxy service unit, bound to loopback |
+
+---
+
+## Using the tunnel
+
+Start the client on your own machine with the certificate copied from the server:
+
+```sh
+slipstream-client --domain t.example.com --resolver <resolver-ip:53> \
+    --cert ./cert.pem --tcp-listen-port 7000
+```
+
+With the SOCKS5 proxy installed, point applications at `127.0.0.1:7000` as a **SOCKS5 proxy** and they go out through the server. Without it, that port is a plain TCP forward to whatever target you chose.
+
 ---
 
 ## Security
@@ -70,6 +91,8 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 **No Docker, deliberately.** Upstream publishes no container image. Installing through Docker would add the daemon's root-equivalent socket to the attack surface without improving on the sandbox above.
 
 **Certificates.** The server generates a self-signed P-256 certificate on first start, and the client pins that exact leaf. No CA is trusted and no ACME challenge port is exposed.
+
+**The proxy is not exposed.** `microsocks` binds `127.0.0.1` only, so it is reachable through the tunnel and from the host itself — never from the network — which is why it runs without credentials of its own. It runs under `DynamicUser`, a throwaway identity with an empty capability set and no access to the server's private key. Note that any local user on the host can also reach it; on a shared machine, restrict it or skip the proxy.
 
 ---
 
@@ -86,12 +109,13 @@ systemctl restart slipstream-server     # restart
 ## Uninstall
 
 ```sh
-sudo systemctl disable --now slipstream-server
-sudo rm -f /etc/systemd/system/slipstream-server.service
+sudo systemctl disable --now slipstream-server slipstream-socks
+sudo rm -f /etc/systemd/system/slipstream-{server,socks}.service
 sudo systemctl daemon-reload
 sudo rm -f /usr/local/bin/slipstream-{server,client}
 sudo rm -rf /etc/slipstream /var/lib/slipstream
 sudo userdel slipstream
+sudo apt-get remove -y microsocks    # only if the proxy was installed
 ```
 
 ---

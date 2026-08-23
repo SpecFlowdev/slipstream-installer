@@ -20,6 +20,7 @@ readonly BIN_DIR="/usr/local/bin"
 readonly CONF_DIR="/etc/slipstream"
 readonly STATE_DIR="/var/lib/slipstream"
 readonly UNIT_PATH="/etc/systemd/system/slipstream-server.service"
+readonly SOCKS_UNIT_PATH="/etc/systemd/system/slipstream-socks.service"
 readonly SERVICE_USER="slipstream"
 
 # Checksums of the release archives this installer is pinned to. Verifying
@@ -111,6 +112,33 @@ valid_hostport() {
   [[ "$1" =~ ^[^[:space:]]+:[0-9]{1,5}$ ]]
 }
 
+# Decides whether to stand up a SOCKS5 proxy as the tunnel's target. An
+# explicit SLIPSTREAM_TARGET means the operator already has somewhere to send
+# traffic, so the proxy is off by default in that case.
+prompt_socks() {
+  local answer
+
+  if [[ -n "${SLIPSTREAM_SOCKS:-}" ]]; then
+    answer="${SLIPSTREAM_SOCKS}"
+  elif [[ -n "${SLIPSTREAM_TARGET:-}" ]]; then
+    answer="n"
+  else
+    answer="$(read_value 'Install a SOCKS5 proxy here and tunnel to it? [Y/n]' 'Y')"
+  fi
+
+  case "${answer}" in
+    [yY1]*|true|TRUE) INSTALL_SOCKS=1 ;;
+    *)                INSTALL_SOCKS=0 ;;
+  esac
+
+  [[ "${INSTALL_SOCKS}" -eq 1 ]] || return 0
+
+  SOCKS_PORT="${SLIPSTREAM_SOCKS_PORT:-1080}"
+  if ! [[ "${SOCKS_PORT}" =~ ^[0-9]{1,5}$ ]] || (( SOCKS_PORT < 1 || SOCKS_PORT > 65535 )); then
+    die "Invalid SOCKS port: ${SOCKS_PORT}"
+  fi
+}
+
 prompt_config() {
   # The domain is the one setting with no sensible default. Without a terminal
   # to ask on it has to come from the environment, or the loops below would
@@ -126,11 +154,20 @@ prompt_config() {
     [[ -n "${DOMAIN}" ]] || warn "Domain is required."
   done
 
-  TARGET="${SLIPSTREAM_TARGET:-}"
-  while ! valid_hostport "${TARGET}"; do
-    [[ -n "${TARGET}" ]] && warn "Expected HOST:PORT, got: ${TARGET}"
-    TARGET="$(read_value 'Forward decrypted traffic to' '127.0.0.1:5201')"
-  done
+  # The tunnel only carries traffic to whatever listens on the target address.
+  # Without something there the tunnel connects and then dies at the last hop,
+  # so offer to put a SOCKS5 proxy on the other end and be done with it.
+  prompt_socks
+
+  if [[ "${INSTALL_SOCKS}" -eq 1 ]]; then
+    TARGET="127.0.0.1:${SOCKS_PORT}"
+  else
+    TARGET="${SLIPSTREAM_TARGET:-}"
+    while ! valid_hostport "${TARGET}"; do
+      [[ -n "${TARGET}" ]] && warn "Expected HOST:PORT, got: ${TARGET}"
+      TARGET="$(read_value 'Forward decrypted traffic to' '127.0.0.1:5201')"
+    done
+  fi
 
   DNS_PORT="${SLIPSTREAM_DNS_PORT:-}"
   while ! [[ "${DNS_PORT}" =~ ^[0-9]{1,5}$ ]] || (( DNS_PORT < 1 || DNS_PORT > 65535 )); do
@@ -210,6 +247,81 @@ install_files() {
   fi
 
   install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0750 "${CONF_DIR}" "${STATE_DIR}"
+}
+
+# microsocks is a ~30KB SOCKS5 server with no config file, packaged by the
+# distribution - so it stays patched through the normal update path instead of
+# needing another pinned download here.
+install_socks() {
+  [[ "${INSTALL_SOCKS}" -eq 1 ]] || return 0
+
+  if ! command -v microsocks >/dev/null 2>&1; then
+    command -v apt-get >/dev/null 2>&1 \
+      || die "microsocks is not installed and this system has no apt-get. Install microsocks manually, or re-run and answer 'n' to the SOCKS prompt."
+    log "Installing microsocks"
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq microsocks >/dev/null 2>&1 \
+      || die "Failed to install microsocks. Enable the 'universe' component, or re-run and answer 'n' to the SOCKS prompt."
+  fi
+
+  log "Writing ${SOCKS_UNIT_PATH}"
+  # Bound to loopback: the proxy is reachable only through the tunnel, so it
+  # needs no credentials of its own. DynamicUser gives it a throwaway identity
+  # with no access to the server's private key.
+  cat > "${SOCKS_UNIT_PATH}" <<EOF
+[Unit]
+Description=SOCKS5 proxy for the slipstream tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/bin/microsocks -i 127.0.0.1 -p ${SOCKS_PORT}
+Restart=on-failure
+RestartSec=2
+
+# Needs no privileges at all: loopback bind on an unprivileged port.
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+UMask=0077
+
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "${SOCKS_UNIT_PATH}"
+
+  log "Enabling and starting slipstream-socks"
+  systemctl daemon-reload
+  systemctl enable --quiet slipstream-socks.service
+  systemctl restart slipstream-socks.service
+
+  sleep 1
+  if ! systemctl is-active --quiet slipstream-socks.service; then
+    journalctl -u slipstream-socks.service -n 20 --no-pager >&2 || true
+    die "The SOCKS5 proxy failed to start; the tunnel would have nowhere to deliver traffic."
+  fi
 }
 
 write_unit() {
@@ -295,13 +407,22 @@ summary() {
       | cut -d= -f2 || echo unavailable)"
   fi
 
+  local forwarding="${TARGET}"
+  local services="slipstream-server"
+  local closing="       Anything sent to 127.0.0.1:7000 comes out at ${TARGET}."
+  if [[ "${INSTALL_SOCKS}" -eq 1 ]]; then
+    forwarding="${TARGET}  (SOCKS5)"
+    services="slipstream-server slipstream-socks"
+    closing="       Then point applications at 127.0.0.1:7000 as a SOCKS5 proxy."
+  fi
+
   cat <<EOF
 
   slipstream-server is running.
 
   Domain            ${DOMAIN}
   DNS listen port   ${DNS_PORT}
-  Forwarding to     ${TARGET}
+  Forwarding to     ${forwarding}
   Certificate       ${CONF_DIR}/cert.pem
   Cert SHA256       ${fingerprint}
 
@@ -314,8 +435,10 @@ summary() {
        slipstream-client --domain ${DOMAIN} --resolver <resolver-ip:53> \\
            --cert ./cert.pem --tcp-listen-port 7000
 
+${closing}
+
   Manage the service
-    systemctl status slipstream-server
+    systemctl status ${services}
     journalctl -u slipstream-server -f
 
 EOF
@@ -329,6 +452,7 @@ main() {
   check_port_conflict
   fetch_binaries
   install_files
+  install_socks
   write_unit
   start_service
   summary
