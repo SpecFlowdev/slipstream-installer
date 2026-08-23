@@ -23,30 +23,7 @@ Linux · x86_64 · arm64
 curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/main/install.sh | sudo bash
 ```
 
-И всё. Ни флагов, ни аргументов — скрипт спрашивает нужное уже после запуска:
-
-```
-==> Tunnel domain (the zone delegated to this host, e.g. t.example.com): t.example.com
-==> Forward decrypted traffic to [127.0.0.1:5201]:
-==> DNS listen port [53]:
-
-==> Downloading slipstream-linux-x86_64.tar.gz (v0.1.1)
-==> Verifying SHA256
-==> Installing binaries to /usr/local/bin
-==> Creating system user slipstream
-==> Writing /etc/systemd/system/slipstream-server.service
-==> Enabling and starting slipstream-server
-
-  slipstream-server is running.
-```
-
-Хотите сначала прочитать, а потом запускать? Разумно:
-
-```sh
-git clone https://github.com/SpecFlowdev/slipstream-installer
-cd slipstream-installer
-sudo ./install.sh
-```
+И всё. Ни флагов, ни аргументов — скрипт спрашивает нужное уже после запуска.
 
 ---
 
@@ -61,23 +38,6 @@ sudo ./install.sh
 
 ---
 
-## Настройка
-
-Любой вопрос можно задать заранее через переменную окружения. Если переменная задана, соответствующий запрос пропускается — так тот же скрипт работает без участия человека.
-
-| Переменная | По умолчанию | Значение |
-| --- | --- | --- |
-| `SLIPSTREAM_DOMAIN` | *(спрашивается)* | Домен туннеля, делегированный на этот хост |
-| `SLIPSTREAM_TARGET` | `127.0.0.1:5201` | Куда форвардить расшифрованный трафик |
-| `SLIPSTREAM_DNS_PORT` | `53` | UDP-порт, который слушает сервер |
-| `SLIPSTREAM_VERSION` | `v0.1.1` | Версия релиза для установки |
-
-```sh
-sudo SLIPSTREAM_DOMAIN=t.example.com SLIPSTREAM_TARGET=127.0.0.1:1080 ./install.sh
-```
-
----
-
 ## Что устанавливается
 
 | Путь | Содержимое |
@@ -87,28 +47,6 @@ sudo SLIPSTREAM_DOMAIN=t.example.com SLIPSTREAM_TARGET=127.0.0.1:1080 ./install.
 | `/etc/slipstream/` | `cert.pem`, `key.pem` — создаются при первом старте |
 | `/var/lib/slipstream/reset-seed` | Seed для stateless reset, переживает перезапуски |
 | `/etc/systemd/system/slipstream-server.service` | Unit сервиса |
-
----
-
-## После установки
-
-**1. Делегируйте домен.** Направьте `NS`-запись домена туннеля на публичный IP этого хоста и откройте UDP на порту прослушивания.
-
-```
-t.example.com.    IN  NS  ns1.example.com.
-ns1.example.com.  IN  A   203.0.113.10
-```
-
-**2. Скопируйте сертификат** из `/etc/slipstream/cert.pem` на клиентскую машину. Клиент пиннит именно этот сертификат, поэтому перенести его нужно один раз вручную.
-
-**3. Подключайтесь.**
-
-```sh
-slipstream-client --domain t.example.com --resolver 1.1.1.1:53 \
-    --cert ./cert.pem --tcp-listen-port 7000
-```
-
-Трафик, отправленный на `127.0.0.1:7000` на клиенте, выходит на цели форвардинга сервера.
 
 ---
 
