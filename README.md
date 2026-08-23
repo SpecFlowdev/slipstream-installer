@@ -48,6 +48,34 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 
 ---
 
+## Tuning the socket buffers
+
+The tunnel moves a lot of small UDP datagrams. On a busy link the kernel's
+default socket buffers overflow and the packets it drops look like loss to
+QUIC, which backs off. Raising them to 25 MiB:
+
+```sh
+sudo tee /etc/sysctl.d/99-slipstream.conf >/dev/null <<'EOF'
+net.core.rmem_max=26214400
+net.core.wmem_max=26214400
+net.core.rmem_default=26214400
+net.core.wmem_default=26214400
+EOF
+sudo sysctl --system
+```
+
+The two `default` values are the ones that change anything here: slipstream
+never calls `setsockopt(SO_RCVBUF)`, so its UDP socket gets whatever the
+default is. The `max` pair only raises the ceiling an application is allowed
+to ask for, and is worth setting so nothing is capped later.
+
+Note that `rmem_default` and `wmem_default` apply to **every** socket on the
+host, so this trades memory across all processes for tunnel throughput. On a
+machine that only runs the tunnel that is the intent; on a shared box, set
+just the `max` pair and leave the defaults alone.
+
+---
+
 ## What gets installed
 
 | Path | Contents |
