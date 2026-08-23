@@ -238,8 +238,9 @@ fetch_binaries() {
 
 install_files() {
   log "Installing binaries to ${BIN_DIR}"
+  # The release archive also carries slipstream-client; this installer is
+  # server-only, so it is left unpacked.
   install -m 0755 "${WORK_DIR}/${ASSET}/slipstream-server" "${BIN_DIR}/slipstream-server"
-  install -m 0755 "${WORK_DIR}/${ASSET}/slipstream-client" "${BIN_DIR}/slipstream-client"
 
   if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
     log "Creating system user ${SERVICE_USER}"
@@ -443,8 +444,8 @@ start_service() {
 }
 
 summary() {
-  # The server generates a self-signed certificate on first start; the client
-  # pins that exact leaf, so no CA is involved.
+  # The server generates a self-signed certificate on first start; it is the
+  # leaf that connecting clients pin, so no CA is involved.
   local fingerprint="unavailable"
   if [[ -f "${CONF_DIR}/cert.pem" ]] && command -v openssl >/dev/null 2>&1; then
     fingerprint="$(openssl x509 -in "${CONF_DIR}/cert.pem" -noout -fingerprint -sha256 2>/dev/null \
@@ -454,7 +455,8 @@ summary() {
   local forwarding="${TARGET}"
   local services="slipstream-server"
   local credentials=""
-  local closing="       Anything sent to 127.0.0.1:7000 comes out at ${TARGET}."
+  local handover="    2. Hand the domain above and ${CONF_DIR}/cert.pem to whatever
+       connects to this server."
   if [[ "${INSTALL_SOCKS}" -eq 1 ]]; then
     forwarding="${TARGET}  (SOCKS5)"
     services="slipstream-server slipstream-socks"
@@ -462,10 +464,10 @@ summary() {
   SOCKS5 password    ${SOCKS_PASS}
                      also saved in ${SOCKS_CRED_PATH}
 "
-    closing="       Then point applications at 127.0.0.1:7000 as a SOCKS5 proxy,
-       using the username and password above. They are required: the tunnel
-       accepts anyone who knows ${DOMAIN}, so the proxy password is what
-       keeps it from being an open proxy."
+    handover="    2. Hand the domain above, ${CONF_DIR}/cert.pem and the SOCKS5
+       credentials to whatever connects to this server. The credentials are
+       required: the tunnel accepts anyone who knows ${DOMAIN}, so the proxy
+       password is what keeps it from being an open proxy."
   fi
 
   cat <<EOF
@@ -481,13 +483,7 @@ ${credentials}
   Next steps
     1. Delegate ${DOMAIN} to this host with an NS record pointing at its
        public IP, and make sure UDP/${DNS_PORT} is reachable.
-    2. Copy ${CONF_DIR}/cert.pem to the client machine.
-    3. Start the client against it:
-
-       slipstream-client --domain ${DOMAIN} --resolver <resolver-ip:53> \\
-           --cert ./cert.pem --tcp-listen-port 7000
-
-${closing}
+${handover}
 
   Manage the service
     systemctl status ${services}

@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 
 ## Why this installer
 
-- **Usable the moment it finishes** — offers to install a SOCKS5 proxy as the tunnel's target, so the client's local port works as a proxy straight away instead of pointing at a port with nothing behind it.
+- **Usable the moment it finishes** — offers to install a SOCKS5 proxy as the tunnel's target, so connecting clients reach a working proxy instead of a port with nothing behind it.
 - **No compiling** — installs a prebuilt release binary. Building slipstream from source pulls in picoquic, picotls and OpenSSL through CMake; this takes seconds instead.
 - **Asks, doesn't guess** — the domain and forwarding target are prompted at runtime, so there is no command line to get wrong. Prompts read from the terminal directly, so they work even through `curl | bash`.
 - **Pinned checksums** — the SHA256 of each release archive is baked into the script, not just fetched next to the download.
@@ -53,7 +53,6 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 | Path | Contents |
 | --- | --- |
 | `/usr/local/bin/slipstream-server` | Server binary — the service runs this |
-| `/usr/local/bin/slipstream-client` | Client binary, bundled in the same archive; useful for testing the tunnel from the server itself |
 | `/etc/slipstream/` | `cert.pem`, `key.pem` — generated on first start |
 | `/var/lib/slipstream/reset-seed` | Stateless-reset seed, preserved across restarts |
 | `/etc/systemd/system/slipstream-server.service` | Service unit |
@@ -68,18 +67,17 @@ With the SOCKS5 proxy enabled, two more:
 
 ---
 
-## Using the tunnel
+## Connecting to it
 
-Start the client on your own machine with the certificate copied from the server:
+This repository installs and configures the **server only**. The client is a separate project with its own repository and its own documentation.
 
-```sh
-slipstream-client --domain t.example.com --resolver <resolver-ip:53> \
-    --cert ./cert.pem --tcp-listen-port 7000
-```
+Everything a client needs is produced here, and the installer prints all of it when it finishes:
 
-With the SOCKS5 proxy installed, point applications at `127.0.0.1:7000` as a **SOCKS5 proxy** and they go out through the server. Use the username and password the installer printed — they are also in `/etc/slipstream/socks-credentials` on the server, and they are what stops anyone who discovers your domain from using the proxy too.
-
-Without the proxy, that port is a plain TCP forward to whatever target you chose.
+| Setting | Where it comes from |
+| --- | --- |
+| Tunnel domain | What you entered during install |
+| Server certificate | `/etc/slipstream/cert.pem` — copy it to the client; it is public data, not a secret |
+| SOCKS5 username and password | Printed at the end, and stored in `/etc/slipstream/socks-credentials` |
 
 ---
 
@@ -119,7 +117,7 @@ systemctl restart slipstream-server     # restart
 sudo systemctl disable --now slipstream-server slipstream-socks
 sudo rm -f /etc/systemd/system/slipstream-{server,socks}.service
 sudo systemctl daemon-reload
-sudo rm -f /usr/local/bin/slipstream-{server,client}
+sudo rm -f /usr/local/bin/slipstream-server
 sudo rm -rf /etc/slipstream /var/lib/slipstream
 sudo userdel slipstream
 sudo apt-get remove -y microsocks    # only if the proxy was installed

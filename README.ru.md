@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 
 ## Зачем этот установщик
 
-- **Готов к работе сразу** — предлагает поставить SOCKS5-прокси как цель туннеля, так что локальный порт клиента сразу работает прокси, а не смотрит в порт, за которым ничего нет.
+- **Готов к работе сразу** — предлагает поставить SOCKS5-прокси как цель туннеля, так что подключившийся клиент попадает в рабочий прокси, а не в порт, за которым ничего нет.
 - **Без компиляции** — ставится готовый бинарник из релиза. Сборка slipstream из исходников тянет picoquic, picotls и OpenSSL через CMake; здесь всё занимает секунды.
 - **Спрашивает, а не угадывает** — домен и цель форвардинга запрашиваются при запуске, так что ошибиться в командной строке негде. Ввод читается напрямую с терминала, поэтому работает даже через `curl | bash`.
 - **Вшитые контрольные суммы** — SHA256 каждого архива зашит в скрипт, а не просто скачивается рядом с архивом.
@@ -53,7 +53,6 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 | Путь | Содержимое |
 | --- | --- |
 | `/usr/local/bin/slipstream-server` | Бинарник сервера — его и запускает сервис |
-| `/usr/local/bin/slipstream-client` | Бинарник клиента, идёт в том же архиве; удобен, чтобы проверить туннель с самого сервера |
 | `/etc/slipstream/` | `cert.pem`, `key.pem` — создаются при первом старте |
 | `/var/lib/slipstream/reset-seed` | Seed для stateless reset, переживает перезапуски |
 | `/etc/systemd/system/slipstream-server.service` | Unit сервиса |
@@ -68,18 +67,17 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 
 ---
 
-## Как пользоваться туннелем
+## Как к нему подключаться
 
-Запустите клиента на своей машине с сертификатом, скопированным с сервера:
+Этот репозиторий ставит и настраивает **только сервер**. Клиент — отдельный проект со своим репозиторием и своей документацией.
 
-```sh
-slipstream-client --domain t.example.com --resolver <resolver-ip:53> \
-    --cert ./cert.pem --tcp-listen-port 7000
-```
+Всё, что нужно клиенту, готовится здесь, и установщик печатает это в конце работы:
 
-Если SOCKS5-прокси установлен, укажите приложениям `127.0.0.1:7000` как **SOCKS5-прокси** — трафик пойдёт через сервер. Логин и пароль установщик печатает в конце; они же лежат в `/etc/slipstream/socks-credentials` на сервере. Именно они не дают воспользоваться прокси тому, кто вычислит ваш домен.
-
-Без прокси этот порт остаётся простым TCP-форвардом на выбранную вами цель.
+| Параметр | Откуда берётся |
+| --- | --- |
+| Домен туннеля | То, что вы ввели при установке |
+| Сертификат сервера | `/etc/slipstream/cert.pem` — скопируйте на клиент; это публичные данные, не секрет |
+| Логин и пароль SOCKS5 | Печатаются в конце, лежат в `/etc/slipstream/socks-credentials` |
 
 ---
 
@@ -119,7 +117,7 @@ systemctl restart slipstream-server     # перезапуск
 sudo systemctl disable --now slipstream-server slipstream-socks
 sudo rm -f /etc/systemd/system/slipstream-{server,socks}.service
 sudo systemctl daemon-reload
-sudo rm -f /usr/local/bin/slipstream-{server,client}
+sudo rm -f /usr/local/bin/slipstream-server
 sudo rm -rf /etc/slipstream /var/lib/slipstream
 sudo userdel slipstream
 sudo apt-get remove -y microsocks    # только если ставили прокси
