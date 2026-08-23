@@ -21,6 +21,7 @@ readonly CONF_DIR="/etc/slipstream"
 readonly STATE_DIR="/var/lib/slipstream"
 readonly UNIT_PATH="/etc/systemd/system/slipstream-server.service"
 readonly SOCKS_UNIT_PATH="/etc/systemd/system/slipstream-socks.service"
+readonly SOCKS_CRED_PATH="/etc/slipstream/socks-credentials"
 readonly SERVICE_USER="slipstream"
 
 # Checksums of the release archives this installer is pinned to. Verifying
@@ -252,6 +253,37 @@ install_files() {
 # microsocks is a ~30KB SOCKS5 server with no config file, packaged by the
 # distribution - so it stays patched through the normal update path instead of
 # needing another pinned download here.
+
+# slipstream does not authenticate clients - certificate pinning proves the
+# server to the client, not the reverse - so anyone who learns the tunnel
+# domain can open a connection. The proxy's own credentials are what stops
+# them turning it into an open proxy.
+resolve_socks_credentials() {
+  SOCKS_USER="${SLIPSTREAM_SOCKS_USER:-slipstream}"
+
+  if [[ -n "${SLIPSTREAM_SOCKS_PASSWORD:-}" ]]; then
+    SOCKS_PASS="${SLIPSTREAM_SOCKS_PASSWORD}"
+  elif [[ -f "${SOCKS_CRED_PATH}" ]]; then
+    # Reuse the existing password so re-running does not break configured clients.
+    SOCKS_PASS="$(sed -n 's/^password=//p' "${SOCKS_CRED_PATH}" | head -1)"
+    SOCKS_USER="$(sed -n 's/^username=//p' "${SOCKS_CRED_PATH}" | head -1)"
+    : "${SOCKS_USER:=slipstream}"
+  fi
+
+  if [[ -z "${SOCKS_PASS:-}" ]]; then
+    # Alphanumeric only: the password ends up in a systemd unit and an argv.
+    # head reads a fixed block first so nothing downstream closes the pipe
+    # early and trips pipefail with SIGPIPE.
+    SOCKS_PASS="$(head -c 512 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | cut -c1-24)"
+  fi
+
+  [[ ${#SOCKS_PASS} -ge 16 ]] || die "Could not generate a SOCKS password."
+
+  case "${SOCKS_USER}${SOCKS_PASS}" in
+    *[[:space:]\'\"\$\\%]*) die "SOCKS credentials must be alphanumeric." ;;
+  esac
+}
+
 install_socks() {
   [[ "${INSTALL_SOCKS}" -eq 1 ]] || return 0
 
@@ -264,10 +296,21 @@ install_socks() {
       || die "Failed to install microsocks. Enable the 'universe' component, or re-run and answer 'n' to the SOCKS prompt."
   fi
 
+  resolve_socks_credentials
+
+  install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0750 "${CONF_DIR}"
+  umask 077
+  cat > "${SOCKS_CRED_PATH}" <<EOF
+username=${SOCKS_USER}
+password=${SOCKS_PASS}
+EOF
+  chmod 0600 "${SOCKS_CRED_PATH}"
+
   log "Writing ${SOCKS_UNIT_PATH}"
-  # Bound to loopback: the proxy is reachable only through the tunnel, so it
-  # needs no credentials of its own. DynamicUser gives it a throwaway identity
-  # with no access to the server's private key.
+  # Bound to loopback so it is never exposed to the network directly, and
+  # password-protected because the tunnel itself lets in anyone who knows the
+  # domain. DynamicUser gives it a throwaway identity with no access to the
+  # server's private key.
   cat > "${SOCKS_UNIT_PATH}" <<EOF
 [Unit]
 Description=SOCKS5 proxy for the slipstream tunnel
@@ -277,7 +320,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 DynamicUser=yes
-ExecStart=/usr/bin/microsocks -i 127.0.0.1 -p ${SOCKS_PORT}
+ExecStart=/usr/bin/microsocks -i 127.0.0.1 -p ${SOCKS_PORT} -u ${SOCKS_USER} -P ${SOCKS_PASS}
 Restart=on-failure
 RestartSec=2
 
@@ -310,7 +353,8 @@ SystemCallErrorNumber=EPERM
 [Install]
 WantedBy=multi-user.target
 EOF
-  chmod 0644 "${SOCKS_UNIT_PATH}"
+  # The unit carries the proxy password, so keep it off world-readable mode.
+  chmod 0640 "${SOCKS_UNIT_PATH}"
 
   log "Enabling and starting slipstream-socks"
   systemctl daemon-reload
@@ -409,11 +453,19 @@ summary() {
 
   local forwarding="${TARGET}"
   local services="slipstream-server"
+  local credentials=""
   local closing="       Anything sent to 127.0.0.1:7000 comes out at ${TARGET}."
   if [[ "${INSTALL_SOCKS}" -eq 1 ]]; then
     forwarding="${TARGET}  (SOCKS5)"
     services="slipstream-server slipstream-socks"
-    closing="       Then point applications at 127.0.0.1:7000 as a SOCKS5 proxy."
+    credentials="  SOCKS5 username    ${SOCKS_USER}
+  SOCKS5 password    ${SOCKS_PASS}
+                     also saved in ${SOCKS_CRED_PATH}
+"
+    closing="       Then point applications at 127.0.0.1:7000 as a SOCKS5 proxy,
+       using the username and password above. They are required: the tunnel
+       accepts anyone who knows ${DOMAIN}, so the proxy password is what
+       keeps it from being an open proxy."
   fi
 
   cat <<EOF
@@ -425,7 +477,7 @@ summary() {
   Forwarding to     ${forwarding}
   Certificate       ${CONF_DIR}/cert.pem
   Cert SHA256       ${fingerprint}
-
+${credentials}
   Next steps
     1. Delegate ${DOMAIN} to this host with an NS record pointing at its
        public IP, and make sure UDP/${DNS_PORT} is reachable.

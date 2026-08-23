@@ -64,6 +64,7 @@ With the SOCKS5 proxy enabled, two more:
 | --- | --- |
 | `/usr/bin/microsocks` | SOCKS5 server, installed from the distribution's packages |
 | `/etc/systemd/system/slipstream-socks.service` | Proxy service unit, bound to loopback |
+| `/etc/slipstream/socks-credentials` | SOCKS5 username and password, mode 0600 |
 
 ---
 
@@ -76,7 +77,9 @@ slipstream-client --domain t.example.com --resolver <resolver-ip:53> \
     --cert ./cert.pem --tcp-listen-port 7000
 ```
 
-With the SOCKS5 proxy installed, point applications at `127.0.0.1:7000` as a **SOCKS5 proxy** and they go out through the server. Without it, that port is a plain TCP forward to whatever target you chose.
+With the SOCKS5 proxy installed, point applications at `127.0.0.1:7000` as a **SOCKS5 proxy** and they go out through the server. Use the username and password the installer printed — they are also in `/etc/slipstream/socks-credentials` on the server, and they are what stops anyone who discovers your domain from using the proxy too.
+
+Without the proxy, that port is a plain TCP forward to whatever target you chose.
 
 ---
 
@@ -92,7 +95,9 @@ With the SOCKS5 proxy installed, point applications at `127.0.0.1:7000` as a **S
 
 **Certificates.** The server generates a self-signed P-256 certificate on first start, and the client pins that exact leaf. No CA is trusted and no ACME challenge port is exposed.
 
-**The proxy is not exposed.** `microsocks` binds `127.0.0.1` only, so it is reachable through the tunnel and from the host itself — never from the network — which is why it runs without credentials of its own. It runs under `DynamicUser`, a throwaway identity with an empty capability set and no access to the server's private key. Note that any local user on the host can also reach it; on a shared machine, restrict it or skip the proxy.
+**The tunnel does not authenticate clients.** Certificate pinning proves the *server's* identity to the client, not the other way round — the server accepts any client that completes the handshake. Anyone who learns your tunnel domain can therefore open a connection and reach whatever sits at the forwarding target. That is why the SOCKS5 proxy is installed with a username and a 24-character random password, generated at install time and saved to `/etc/slipstream/socks-credentials`. Point the tunnel at a target of your own instead and that service needs access control of its own.
+
+**The proxy is not exposed directly.** `microsocks` binds `127.0.0.1` only, so it is never reachable from the network — just through the tunnel, or from the host. It runs under `DynamicUser`, a throwaway identity with an empty capability set and no access to the server's private key. The password is kept out of `ps` by microsocks itself and out of world-readable files by mode `0640` on the unit, though any local user on the host can still reach the proxy port.
 
 ---
 
