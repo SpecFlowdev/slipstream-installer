@@ -2,9 +2,9 @@
 
 [English](README.md) · **Русский**
 
-<img src="assets/banner.svg" alt="Slipstream Installer" width="100%">
+<img src="assets/banner.svg" alt="Slipstream Server Installer" width="100%">
 
-### Установщик в одну команду для сервера DNS-туннеля [slipstream](https://github.com/Mygod/slipstream-rust)
+### Установщик в одну команду для **сервера** DNS-туннеля [slipstream](https://github.com/Mygod/slipstream-rust)
 
 Linux · x86_64 · arm64
 
@@ -19,11 +19,20 @@ Linux · x86_64 · arm64
 
 ## Установка
 
+Запускайте на машине, которая будет держать сервер туннеля:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/main/install.sh | sudo bash
 ```
 
-И всё. Ни флагов, ни аргументов — скрипт спрашивает нужное уже после запуска.
+---
+
+## Требования
+
+- **Linux с systemd**, x86_64 или arm64
+- **Root** — чтобы установить сервис и занять DNS-порт
+- **Свой домен**, чью `NS`-запись можно направить на этот хост
+- **Доступный UDP** на порту прослушивания, по умолчанию 53
 
 ---
 
@@ -42,8 +51,8 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 
 | Путь | Содержимое |
 | --- | --- |
-| `/usr/local/bin/slipstream-server` | Бинарник сервера |
-| `/usr/local/bin/slipstream-client` | Бинарник клиента, идёт в том же архиве |
+| `/usr/local/bin/slipstream-server` | Бинарник сервера — его и запускает сервис |
+| `/usr/local/bin/slipstream-client` | Бинарник клиента, идёт в том же архиве; удобен, чтобы проверить туннель с самого сервера |
 | `/etc/slipstream/` | `cert.pem`, `key.pem` — создаются при первом старте |
 | `/var/lib/slipstream/reset-seed` | Seed для stateless reset, переживает перезапуски |
 | `/etc/systemd/system/slipstream-server.service` | Unit сервиса |
@@ -52,7 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 
 ## Безопасность
 
-**Вшитые контрольные суммы.** Архивы релиза сверяются с SHA256, зашитым в `install.sh`. Проверка только по файлу `.sha256`, лежащему рядом с архивом, не поймала бы подмену релиза: тот, кто может заменить одно, заменит и другое. При переопределении `SLIPSTREAM_VERSION` скрипт откатывается на опубликованную сумму и честно об этом предупреждает.
+**Вшитые контрольные суммы.** Архивы релиза сверяются с SHA256, зашитым в `install.sh`. Проверка только по файлу `.sha256`, лежащему рядом с архивом, не поймала бы подмену релиза: тот, кто может заменить одно, заменит и другое. При установке версии, отличной от штатной, скрипт откатывается на опубликованную сумму этого релиза и честно об этом предупреждает.
 
 **Не root во время работы.** Сервис работает под непривилегированным системным пользователем `slipstream`. Право занять порт 53 даёт одна лишь `CAP_NET_BIND_SERVICE`, а не запуск от root; `NoNewPrivileges` закрывает повышение привилегий.
 
@@ -71,6 +80,8 @@ systemctl status slipstream-server      # состояние
 journalctl -u slipstream-server -f      # смотреть логи
 systemctl restart slipstream-server     # перезапуск
 ```
+
+---
 
 ## Удаление
 

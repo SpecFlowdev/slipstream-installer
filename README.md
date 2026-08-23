@@ -2,9 +2,9 @@
 
 **English** · [Русский](README.ru.md)
 
-<img src="assets/banner.svg" alt="Slipstream Installer" width="100%">
+<img src="assets/banner.svg" alt="Slipstream Server Installer" width="100%">
 
-### One-command installer for the [slipstream](https://github.com/Mygod/slipstream-rust) DNS tunnel server
+### One-command installer for the [slipstream](https://github.com/Mygod/slipstream-rust) DNS tunnel **server**
 
 Linux · x86_64 · arm64
 
@@ -19,11 +19,20 @@ Linux · x86_64 · arm64
 
 ## Install
 
+Run on the machine that will host the tunnel server:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/main/install.sh | sudo bash
 ```
 
-That's it. No flags, no arguments — the script asks for what it needs after it starts.
+---
+
+## Requirements
+
+- **Linux with systemd**, x86_64 or arm64
+- **Root**, to install the service and bind the DNS port
+- **A domain you control**, whose `NS` record can be pointed at this host
+- **UDP reachable** on the listen port, port 53 by default
 
 ---
 
@@ -42,8 +51,8 @@ That's it. No flags, no arguments — the script asks for what it needs after it
 
 | Path | Contents |
 | --- | --- |
-| `/usr/local/bin/slipstream-server` | Server binary |
-| `/usr/local/bin/slipstream-client` | Client binary, shipped in the same archive |
+| `/usr/local/bin/slipstream-server` | Server binary — the service runs this |
+| `/usr/local/bin/slipstream-client` | Client binary, bundled in the same archive; useful for testing the tunnel from the server itself |
 | `/etc/slipstream/` | `cert.pem`, `key.pem` — generated on first start |
 | `/var/lib/slipstream/reset-seed` | Stateless-reset seed, preserved across restarts |
 | `/etc/systemd/system/slipstream-server.service` | Service unit |
@@ -52,7 +61,7 @@ That's it. No flags, no arguments — the script asks for what it needs after it
 
 ## Security
 
-**Pinned checksums.** Release archives are verified against a SHA256 baked into `install.sh`. Checking only the `.sha256` published beside the archive would not catch a swapped release, since anyone able to replace one could replace the other. Overriding `SLIPSTREAM_VERSION` falls back to the published checksum and says so.
+**Pinned checksums.** Release archives are verified against a SHA256 baked into `install.sh`. Checking only the `.sha256` published beside the archive would not catch a swapped release, since anyone able to replace one could replace the other. Installing a non-default release falls back to that release's published checksum, and the script says so when it does.
 
 **No root at runtime.** The service runs as the unprivileged `slipstream` system user. Binding port 53 comes from `CAP_NET_BIND_SERVICE` alone rather than from running as root, and `NoNewPrivileges` blocks escalation.
 
@@ -71,6 +80,8 @@ systemctl status slipstream-server      # state
 journalctl -u slipstream-server -f      # follow logs
 systemctl restart slipstream-server     # restart
 ```
+
+---
 
 ## Uninstall
 
