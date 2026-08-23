@@ -69,13 +69,26 @@ detect_arch() {
 # Interactive configuration
 # --------------------------------------------------------------------------
 
+# /dev/tty can exist as a node yet fail to open when the process has no
+# controlling terminal (cron, CI, some service managers). Only an actual open
+# proves prompting will work, so probe it once up front.
+detect_tty() {
+  if { : < /dev/tty; } 2>/dev/null; then
+    HAVE_TTY=1
+  else
+    HAVE_TTY=0
+  fi
+}
+
 # Reads a value from the terminal even when the script itself arrived on stdin
 # (curl | bash). Falls back to the supplied default when no terminal exists.
+# Callers run this in a command substitution, where `exit` would only leave the
+# subshell - so this never fails fatally; prompts that cannot be defaulted are
+# rejected by prompt_config before it gets here.
 read_value() {
   local prompt="$1" default="${2:-}" reply=""
 
-  if [[ ! -r /dev/tty ]]; then
-    [[ -n "${default}" ]] || die "No terminal available and no default for: ${prompt}"
+  if [[ "${HAVE_TTY}" -ne 1 ]]; then
     printf '%s\n' "${default}"
     return
   fi
@@ -99,6 +112,13 @@ valid_hostport() {
 }
 
 prompt_config() {
+  # The domain is the one setting with no sensible default. Without a terminal
+  # to ask on it has to come from the environment, or the loops below would
+  # spin forever on an empty answer.
+  if [[ "${HAVE_TTY}" -ne 1 && -z "${SLIPSTREAM_DOMAIN:-}" ]]; then
+    die "No terminal available to prompt on. Set SLIPSTREAM_DOMAIN to install unattended, e.g. SLIPSTREAM_DOMAIN=t.example.com $0"
+  fi
+
   DOMAIN="${SLIPSTREAM_DOMAIN:-}"
   while ! valid_domain "${DOMAIN}"; do
     [[ -n "${DOMAIN}" ]] && warn "Not a valid domain: ${DOMAIN}"
@@ -303,6 +323,7 @@ EOF
 
 main() {
   preflight
+  detect_tty
   detect_arch
   prompt_config
   check_port_conflict

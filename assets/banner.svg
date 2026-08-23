@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="280" viewBox="0 0 1200 280" role="img" aria-label="Slipstream Installer">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a1220"/>
+      <stop offset="55%" stop-color="#0d1b2e"/>
+      <stop offset="100%" stop-color="#071019"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#22d3a8"/>
+    </linearGradient>
+    <linearGradient id="fade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0"/>
+      <stop offset="45%" stop-color="#38bdf8" stop-opacity=".55"/>
+      <stop offset="100%" stop-color="#22d3a8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="280" fill="url(#bg)"/>
+
+  <!-- packets travelling through the tunnel -->
+  <g opacity=".5">
+    <path d="M0 74h1200" stroke="url(#fade)" stroke-width="1"/>
+    <path d="M0 140h1200" stroke="url(#fade)" stroke-width="1.5"/>
+    <path d="M0 208h1200" stroke="url(#fade)" stroke-width="1"/>
+  </g>
+  <g fill="#38bdf8" opacity=".85">
+    <rect x="120" y="71" width="26" height="6" rx="3"/>
+    <rect x="188" y="71" width="14" height="6" rx="3" opacity=".6"/>
+    <rect x="980" y="71" width="34" height="6" rx="3" opacity=".4"/>
+    <rect x="250" y="205" width="30" height="6" rx="3" opacity=".7"/>
+    <rect x="318" y="205" width="16" height="6" rx="3" opacity=".45"/>
+    <rect x="900" y="205" width="22" height="6" rx="3" opacity=".5"/>
+  </g>
+  <g fill="#22d3a8">
+    <rect x="640" y="136" width="44" height="8" rx="4"/>
+    <rect x="702" y="136" width="20" height="8" rx="4" opacity=".65"/>
+    <rect x="740" y="136" width="12" height="8" rx="4" opacity=".4"/>
+  </g>
+
+  <text x="600" y="128" text-anchor="middle"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="58" font-weight="700" letter-spacing="6" fill="#e8f1f8">
+    SLIPSTREAM
+  </text>
+  <text x="600" y="176" text-anchor="middle"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="21" font-weight="600" letter-spacing="11" fill="url(#accent)">
+    I N S T A L L E R
+  </text>
+  <text x="600" y="230" text-anchor="middle"
+        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="16" letter-spacing="1" fill="#7d98ad">
+    QUIC over DNS — one command, no build
+  </text>
+</svg>
