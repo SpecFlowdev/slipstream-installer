@@ -25,6 +25,44 @@ Run on the machine that will host the tunnel server:
 curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/main/install.sh | sudo bash
 ```
 
+It asks for the tunnel domain, offers to put a SOCKS5 proxy behind it, and prints everything a client needs when it finishes.
+
+```sh
+sudo ./install.sh --uninstall   # stop and remove everything it installed
+./install.sh --help             # every option and environment variable
+```
+
+---
+
+## Running it unattended
+
+Every answer can be preseeded, which also makes the script usable from a provisioning tool. Only the domain has no sensible default:
+
+```sh
+SLIPSTREAM_DOMAIN=t.example.com sudo -E ./install.sh
+```
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SLIPSTREAM_DOMAIN` | — | Tunnel domain. Required when there is no terminal to ask on |
+| `SLIPSTREAM_DNS_PORT` | `53` | DNS listen port |
+| `SLIPSTREAM_SOCKS` | `y` | Install a SOCKS5 proxy as the tunnel target |
+| `SLIPSTREAM_SOCKS_PORT` | `1080` | Loopback port for that proxy |
+| `SLIPSTREAM_SOCKS_USER` | `slipstream` | Proxy username |
+| `SLIPSTREAM_SOCKS_PASSWORD` | generated | Proxy password; reused from an earlier install when present |
+| `SLIPSTREAM_TARGET` | — | Forward to your own service instead of an installed proxy |
+| `SLIPSTREAM_SYSCTL` | `y` | Raise the UDP socket buffers |
+| `SLIPSTREAM_FIREWALL` | `y` | Open the DNS port in `ufw` or `firewalld` |
+| `SLIPSTREAM_VERSION` | `v0.1.1` | Upstream release to install |
+
+Three more are passed straight through to `slipstream-server`:
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SLIPSTREAM_MAX_CONNECTIONS` | `256` | Concurrent tunnel connections |
+| `SLIPSTREAM_IDLE_TIMEOUT` | `60` | Seconds before an idle connection is dropped |
+| `SLIPSTREAM_FALLBACK` | off | `HOST:PORT` to relay packets that **are not DNS** to, letting another service share the DNS port. Ordinary DNS queries are answered by slipstream itself either way |
+
 ---
 
 ## Requirements
@@ -44,6 +82,10 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 - **Pinned checksums** — the SHA256 of each release archive is baked into the script, not just fetched next to the download.
 - **Not root at runtime** — the service runs as an unprivileged user and binds port 53 through a single capability.
 - **Handles the port 53 collision** — detects the `systemd-resolved` stub listener that silently breaks DNS binds on Ubuntu and Debian, and offers to disable it.
+- **Tunes the host** — offers to raise the UDP socket buffers, which is the single largest thing standing between this server and its throughput and otherwise a step people skip.
+- **Opens the firewall** — spots a running `ufw` or `firewalld` and offers to let the DNS port through, since an unopened firewall looks exactly like a broken tunnel.
+- **Checks the port really bound** — an active unit is not a listening socket; slipstream warns and carries on when a bind does not go its way, so the installer looks at the socket rather than trusting the unit.
+- **Removes itself** — `--uninstall` stops the services, deletes the units, binary and tuning file, and asks before touching the certificate your clients pinned.
 - **Self-configuring TLS** — the server generates its own certificate on first start. No CA, no ACME, no extra open port.
 
 ---
@@ -52,7 +94,10 @@ curl -fsSL https://raw.githubusercontent.com/SpecFlowdev/slipstream-installer/ma
 
 The tunnel moves a lot of small UDP datagrams. On a busy link the kernel's
 default socket buffers overflow and the packets it drops look like loss to
-QUIC, which backs off. Raising them to 25 MiB:
+QUIC, which backs off.
+
+**The installer offers to do this for you** and writes the same file; answer
+`n`, or set `SLIPSTREAM_SYSCTL=n`, to keep the host untouched. By hand it is:
 
 ```sh
 sudo tee /etc/sysctl.d/99-slipstream.conf >/dev/null <<'EOF'
@@ -84,12 +129,13 @@ just the `max` pair and leave the defaults alone.
 | `/etc/slipstream/` | `cert.pem`, `key.pem` — generated on first start |
 | `/var/lib/slipstream/reset-seed` | Stateless-reset seed, preserved across restarts |
 | `/etc/systemd/system/slipstream-server.service` | Service unit |
+| `/etc/sysctl.d/99-slipstream.conf` | UDP buffer sizes, only if you accepted the tuning |
 
-With the SOCKS5 proxy enabled, two more:
+With the SOCKS5 proxy enabled, three more:
 
 | Path | Contents |
 | --- | --- |
-| `/usr/bin/microsocks` | SOCKS5 server, installed from the distribution's packages |
+| `microsocks` | SOCKS5 server, installed from the distribution's packages (`apt`, `dnf`, `pacman` or `apk`) |
 | `/etc/systemd/system/slipstream-socks.service` | Proxy service unit, bound to loopback |
 | `/etc/slipstream/socks-credentials` | SOCKS5 username and password, mode 0600 |
 
@@ -142,14 +188,22 @@ systemctl restart slipstream-server     # restart
 ## Uninstall
 
 ```sh
-sudo systemctl disable --now slipstream-server slipstream-socks
-sudo rm -f /etc/systemd/system/slipstream-{server,socks}.service
-sudo systemctl daemon-reload
-sudo rm -f /usr/local/bin/slipstream-server
-sudo rm -rf /etc/slipstream /var/lib/slipstream
-sudo userdel slipstream
-sudo apt-get remove -y microsocks    # only if the proxy was installed
+sudo ./install.sh --uninstall
 ```
+
+Stops and disables both services, removes the units, the binary and the
+sysctl file, and drops the `slipstream` user.
+
+The certificate is what your clients pinned, so `/etc/slipstream` and
+`/var/lib/slipstream` are **kept unless you say otherwise** — deleting them
+means handing every configured client a new certificate. The script asks, and
+defaults to keeping them.
+
+Two things it deliberately leaves alone, both reported at the end: a firewall
+rule it may have added, and the `systemd-resolved` stub listener if that was
+disabled during install. Removing either is a decision about the host, not
+about this tunnel. `microsocks` came from your package manager and is removed
+the same way, if you want it gone.
 
 ---
 

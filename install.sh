@@ -5,16 +5,20 @@
 # Installs a prebuilt slipstream-server release binary and registers it as a
 # hardened systemd service. No compilation is involved.
 #
-#   sudo ./install.sh
+#   sudo ./install.sh              install (asks for the domain)
+#   sudo ./install.sh --uninstall  remove everything it installed
+#   ./install.sh --help            every option and environment variable
 #
-# The script is interactive: it asks for the domain and the forwarding target
-# after it starts. Every prompt can also be preseeded with an environment
-# variable, which makes the script usable unattended.
+# The script is interactive: it asks for the domain and a couple of yes/no
+# questions after it starts. Every answer can also be preseeded with an
+# environment variable, which makes the script usable unattended.
 #
 set -euo pipefail
 
+readonly SELF_VERSION="1.1.0"
 readonly UPSTREAM_REPO="Mygod/slipstream-rust"
-readonly VERSION="${SLIPSTREAM_VERSION:-v0.1.1}"
+readonly PINNED_VERSION="v0.1.1"
+readonly VERSION="${SLIPSTREAM_VERSION:-${PINNED_VERSION}}"
 
 readonly BIN_DIR="/usr/local/bin"
 readonly CONF_DIR="/etc/slipstream"
@@ -22,6 +26,8 @@ readonly STATE_DIR="/var/lib/slipstream"
 readonly UNIT_PATH="/etc/systemd/system/slipstream-server.service"
 readonly SOCKS_UNIT_PATH="/etc/systemd/system/slipstream-socks.service"
 readonly SOCKS_CRED_PATH="/etc/slipstream/socks-credentials"
+readonly SYSCTL_PATH="/etc/sysctl.d/99-slipstream.conf"
+readonly RESOLVED_DROPIN="/etc/systemd/resolved.conf.d/slipstream.conf"
 readonly SERVICE_USER="slipstream"
 
 # Checksums of the release archives this installer is pinned to. Verifying
@@ -36,10 +42,63 @@ log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m warn\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m error\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Runs on every exit, including the paths that never download anything. The
+# `if` matters: as a bare `[[ ... ]] && rm`, the test failing made cleanup
+# return 1, and bash hands an EXIT trap's status to the shell - so the script
+# exited 1 after a *successful* install, and `./install.sh && something` never
+# ran the something.
 cleanup() {
-  [[ -n "${WORK_DIR}" && -d "${WORK_DIR}" ]] && rm -rf "${WORK_DIR}"
+  if [[ -n "${WORK_DIR}" && -d "${WORK_DIR}" ]]; then
+    rm -rf "${WORK_DIR}"
+  fi
 }
 trap cleanup EXIT
+
+usage() {
+  cat <<EOF
+slipstream-server installer ${SELF_VERSION}
+
+  sudo ./install.sh                 Install and start the server.
+  sudo ./install.sh --uninstall     Stop and remove everything it installed.
+       ./install.sh --help          This text.
+       ./install.sh --version       Print the installer version.
+
+Answers can be preseeded, which also makes the script run unattended:
+
+  SLIPSTREAM_DOMAIN           Tunnel domain. Required when there is no
+                              terminal to ask on.
+  SLIPSTREAM_DNS_PORT         DNS listen port. Default 53.
+  SLIPSTREAM_SOCKS            y/n - install a SOCKS5 proxy as the tunnel
+                              target. Default y, unless SLIPSTREAM_TARGET
+                              is set.
+  SLIPSTREAM_SOCKS_PORT       Loopback port for that proxy. Default 1080.
+  SLIPSTREAM_SOCKS_USER       Proxy username. Default slipstream.
+  SLIPSTREAM_SOCKS_PASSWORD   Proxy password. Generated when unset, and
+                              reused from an earlier install if present.
+  SLIPSTREAM_TARGET           Forward tunnelled traffic here instead of to
+                              a proxy installed by this script. HOST:PORT.
+
+Tuning, passed straight to slipstream-server:
+
+  SLIPSTREAM_FALLBACK         HOST:PORT to relay packets that are not DNS
+                              at all to, letting another service share the
+                              DNS port. Ordinary DNS queries are answered by
+                              slipstream itself either way. Off when unset.
+  SLIPSTREAM_MAX_CONNECTIONS  Concurrent tunnel connections. Default 256.
+  SLIPSTREAM_IDLE_TIMEOUT     Seconds before an idle connection is dropped.
+                              Default 60.
+
+System changes, each asked before it happens:
+
+  SLIPSTREAM_SYSCTL           y/n - raise the UDP socket buffers. Default y.
+  SLIPSTREAM_FIREWALL         y/n - open the DNS port in ufw or firewalld.
+                              Default y.
+  SLIPSTREAM_VERSION          Upstream release to install. Default ${PINNED_VERSION};
+                              anything else is verified against the checksum
+                              published with that release rather than the one
+                              pinned here.
+EOF
+}
 
 # --------------------------------------------------------------------------
 # Preflight
@@ -105,12 +164,33 @@ read_value() {
   printf '%s\n' "${reply:-${default}}"
 }
 
+# Yes/no with a preseed variable, used for the questions that change the
+# system rather than just configure the tunnel.
+confirm() {
+  local prompt="$1" default="$2" preset="${3:-}" answer
+
+  if [[ -n "${preset}" ]]; then
+    answer="${preset}"
+  else
+    answer="$(read_value "${prompt}" "${default}")"
+  fi
+
+  case "${answer}" in
+    [yY1]*|true|TRUE) return 0 ;;
+    *)                return 1 ;;
+  esac
+}
+
 valid_domain() {
   [[ "$1" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}$ ]]
 }
 
 valid_hostport() {
   [[ "$1" =~ ^[^[:space:]]+:[0-9]{1,5}$ ]]
+}
+
+valid_port() {
+  [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( $1 >= 1 && $1 <= 65535 ))
 }
 
 # Decides whether to stand up a SOCKS5 proxy as the tunnel's target. An
@@ -135,9 +215,25 @@ prompt_socks() {
   [[ "${INSTALL_SOCKS}" -eq 1 ]] || return 0
 
   SOCKS_PORT="${SLIPSTREAM_SOCKS_PORT:-1080}"
-  if ! [[ "${SOCKS_PORT}" =~ ^[0-9]{1,5}$ ]] || (( SOCKS_PORT < 1 || SOCKS_PORT > 65535 )); then
-    die "Invalid SOCKS port: ${SOCKS_PORT}"
+  valid_port "${SOCKS_PORT}" || die "Invalid SOCKS port: ${SOCKS_PORT}"
+}
+
+# The tuning flags. These are deliberately environment-only: the defaults are
+# right for almost everyone, and asking four more questions would make the
+# common install longer for no gain.
+resolve_tuning() {
+  FALLBACK="${SLIPSTREAM_FALLBACK:-}"
+  if [[ -n "${FALLBACK}" ]] && ! valid_hostport "${FALLBACK}"; then
+    die "SLIPSTREAM_FALLBACK must be HOST:PORT, got: ${FALLBACK}"
   fi
+
+  MAX_CONNECTIONS="${SLIPSTREAM_MAX_CONNECTIONS:-256}"
+  [[ "${MAX_CONNECTIONS}" =~ ^[0-9]+$ ]] && (( MAX_CONNECTIONS >= 1 )) \
+    || die "SLIPSTREAM_MAX_CONNECTIONS must be a positive number, got: ${MAX_CONNECTIONS}"
+
+  IDLE_TIMEOUT="${SLIPSTREAM_IDLE_TIMEOUT:-60}"
+  [[ "${IDLE_TIMEOUT}" =~ ^[0-9]+$ ]] && (( IDLE_TIMEOUT >= 1 )) \
+    || die "SLIPSTREAM_IDLE_TIMEOUT must be a positive number of seconds, got: ${IDLE_TIMEOUT}"
 }
 
 prompt_config() {
@@ -171,10 +267,12 @@ prompt_config() {
   fi
 
   DNS_PORT="${SLIPSTREAM_DNS_PORT:-}"
-  while ! [[ "${DNS_PORT}" =~ ^[0-9]{1,5}$ ]] || (( DNS_PORT < 1 || DNS_PORT > 65535 )); do
+  while ! valid_port "${DNS_PORT}"; do
     [[ -n "${DNS_PORT}" ]] && warn "Invalid port: ${DNS_PORT}"
     DNS_PORT="$(read_value 'DNS listen port' '53')"
   done
+
+  resolve_tuning
 }
 
 # --------------------------------------------------------------------------
@@ -189,19 +287,85 @@ check_port_conflict() {
   grep -qsE '^\s*DNSStubListener\s*=\s*no' /etc/systemd/resolved.conf /etc/systemd/resolved.conf.d/*.conf 2>/dev/null && return 0
 
   warn "systemd-resolved holds a DNS stub listener on port 53."
-  local answer
-  answer="$(read_value 'Disable the stub listener so slipstream can bind port 53? [y/N]' 'N')"
-  case "${answer}" in
-    [yY]*)
-      mkdir -p /etc/systemd/resolved.conf.d
-      printf '[Resolve]\nDNSStubListener=no\n' > /etc/systemd/resolved.conf.d/slipstream.conf
-      # Keep name resolution working once the stub is gone.
-      [[ -e /etc/resolv.conf ]] && ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
-      systemctl restart systemd-resolved
-      log "Stub listener disabled."
+  if confirm 'Disable the stub listener so slipstream can bind port 53? [y/N]' 'N'; then
+    mkdir -p /etc/systemd/resolved.conf.d
+    printf '[Resolve]\nDNSStubListener=no\n' > "${RESOLVED_DROPIN}"
+    # Keep name resolution working once the stub is gone.
+    [[ -e /etc/resolv.conf ]] && ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+    systemctl restart systemd-resolved
+    log "Stub listener disabled."
+  else
+    warn "Leaving systemd-resolved as is. The service will fail to bind port 53."
+  fi
+}
+
+# --------------------------------------------------------------------------
+# Host tuning
+# --------------------------------------------------------------------------
+
+# The tunnel moves a great many small UDP datagrams. On a busy link the
+# kernel's default socket buffers overflow, and packets it drops look like
+# loss to QUIC, which then backs off - so the single largest thing standing
+# between this server and its throughput is a setting the operator would
+# otherwise have to find in the README and apply by hand.
+#
+# The `default` pair is what actually changes anything here: slipstream never
+# calls setsockopt(SO_RCVBUF), so its socket gets whatever the default is. The
+# `max` pair only raises the ceiling an application may ask for.
+tune_sysctl() {
+  confirm 'Raise the UDP socket buffers to 25 MiB (recommended)? [Y/n]' 'Y' "${SLIPSTREAM_SYSCTL:-}" || {
+    log "Leaving socket buffers alone."
+    return 0
+  }
+
+  log "Writing ${SYSCTL_PATH}"
+  cat > "${SYSCTL_PATH}" <<'EOF'
+# Installed by slipstream-installer. Remove this file to revert.
+#
+# The tunnel's UDP socket takes whatever rmem_default/wmem_default are, so
+# those two are what raise its throughput; the max pair only lifts the
+# ceiling. These apply to every socket on the machine, which is the right
+# trade on a host dedicated to the tunnel and the wrong one on a shared box.
+net.core.rmem_max=26214400
+net.core.wmem_max=26214400
+net.core.rmem_default=26214400
+net.core.wmem_default=26214400
+EOF
+  chmod 0644 "${SYSCTL_PATH}"
+  sysctl --system >/dev/null 2>&1 || warn "sysctl --system reported a problem; the values apply on next boot."
+}
+
+# A tunnel nobody can reach looks exactly like a broken tunnel, and an
+# unopened firewall is the most common reason for it. Only touches a firewall
+# that is actually running.
+open_firewall() {
+  local tool=""
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi '^Status: active'; then
+    tool="ufw"
+  elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    tool="firewalld"
+  else
+    return 0
+  fi
+
+  confirm "Open UDP/${DNS_PORT} in ${tool}? [Y/n]" 'Y' "${SLIPSTREAM_FIREWALL:-}" || {
+    warn "Leaving ${tool} alone. UDP/${DNS_PORT} must be reachable for the tunnel to work."
+    return 0
+  }
+
+  case "${tool}" in
+    ufw)
+      ufw allow "${DNS_PORT}/udp" >/dev/null 2>&1 \
+        && log "Opened UDP/${DNS_PORT} in ufw." \
+        || warn "Could not add the ufw rule; open UDP/${DNS_PORT} by hand."
       ;;
-    *)
-      warn "Leaving systemd-resolved as is. The service will fail to bind port 53."
+    firewalld)
+      if firewall-cmd --permanent --add-port="${DNS_PORT}/udp" >/dev/null 2>&1 \
+         && firewall-cmd --reload >/dev/null 2>&1; then
+        log "Opened UDP/${DNS_PORT} in firewalld."
+      else
+        warn "Could not add the firewalld rule; open UDP/${DNS_PORT} by hand."
+      fi
       ;;
   esac
 }
@@ -222,7 +386,7 @@ fetch_binaries() {
   # A pinned checksum only applies to the pinned version. If the operator asked
   # for a different one, fall back to the checksum published by the release.
   local expected="${EXPECTED_SHA256}"
-  if [[ "${VERSION}" != "v0.1.1" ]]; then
+  if [[ "${VERSION}" != "${PINNED_VERSION}" ]]; then
     warn "Version overridden to ${VERSION}; verifying against the published checksum instead of the pinned one."
     expected="$(curl -fsSL --retry 3 "${base}/${ASSET}.sha256" | awk '{print $1}')" \
       || die "Could not fetch checksum for ${VERSION}"
@@ -254,6 +418,27 @@ install_files() {
 # microsocks is a ~30KB SOCKS5 server with no config file, packaged by the
 # distribution - so it stays patched through the normal update path instead of
 # needing another pinned download here.
+install_microsocks_package() {
+  command -v microsocks >/dev/null 2>&1 && return 0
+
+  log "Installing microsocks"
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq microsocks >/dev/null 2>&1 && return 0
+    die "Failed to install microsocks. Enable the 'universe' component, or re-run and answer 'n' to the SOCKS prompt."
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q microsocks >/dev/null 2>&1 && return 0
+    die "Failed to install microsocks. Enable EPEL, or re-run and answer 'n' to the SOCKS prompt."
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm --needed microsocks >/dev/null 2>&1 && return 0
+    die "Failed to install microsocks. Install it by hand, or re-run and answer 'n' to the SOCKS prompt."
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --quiet microsocks >/dev/null 2>&1 && return 0
+    die "Failed to install microsocks. Install it by hand, or re-run and answer 'n' to the SOCKS prompt."
+  fi
+
+  die "microsocks is not installed and no supported package manager was found. Install microsocks manually, or re-run and answer 'n' to the SOCKS prompt."
+}
 
 # slipstream does not authenticate clients - certificate pinning proves the
 # server to the client, not the reverse - so anyone who learns the tunnel
@@ -288,15 +473,7 @@ resolve_socks_credentials() {
 install_socks() {
   [[ "${INSTALL_SOCKS}" -eq 1 ]] || return 0
 
-  if ! command -v microsocks >/dev/null 2>&1; then
-    command -v apt-get >/dev/null 2>&1 \
-      || die "microsocks is not installed and this system has no apt-get. Install microsocks manually, or re-run and answer 'n' to the SOCKS prompt."
-    log "Installing microsocks"
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq microsocks >/dev/null 2>&1 \
-      || die "Failed to install microsocks. Enable the 'universe' component, or re-run and answer 'n' to the SOCKS prompt."
-  fi
-
+  install_microsocks_package
   resolve_socks_credentials
 
   install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0750 "${CONF_DIR}"
@@ -321,7 +498,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 DynamicUser=yes
-ExecStart=/usr/bin/microsocks -i 127.0.0.1 -p ${SOCKS_PORT} -u ${SOCKS_USER} -P ${SOCKS_PASS}
+ExecStart=$(command -v microsocks) -i 127.0.0.1 -p ${SOCKS_PORT} -u ${SOCKS_USER} -P ${SOCKS_PASS}
 Restart=on-failure
 RestartSec=2
 
@@ -371,6 +548,13 @@ EOF
 
 write_unit() {
   log "Writing ${UNIT_PATH}"
+
+  # Optional flags are assembled first so the unit only carries what was
+  # actually asked for, rather than spelling out defaults.
+  local extra=""
+  [[ -n "${FALLBACK}" ]] && extra+=" \\
+    --fallback ${FALLBACK}"
+
   cat > "${UNIT_PATH}" <<EOF
 [Unit]
 Description=Slipstream DNS tunnel server
@@ -388,7 +572,9 @@ ExecStart=${BIN_DIR}/slipstream-server \\
     --target-address ${TARGET} \\
     --cert ${CONF_DIR}/cert.pem \\
     --key ${CONF_DIR}/key.pem \\
-    --reset-seed ${STATE_DIR}/reset-seed
+    --reset-seed ${STATE_DIR}/reset-seed \\
+    --max-connections ${MAX_CONNECTIONS} \\
+    --idle-timeout-seconds ${IDLE_TIMEOUT}${extra}
 Restart=on-failure
 RestartSec=2
 
@@ -441,6 +627,25 @@ start_service() {
     journalctl -u slipstream-server.service -n 30 --no-pager >&2 || true
     die "Installation finished but the service is not running."
   fi
+
+  # An active unit is not the same as a bound socket. slipstream-server warns
+  # and carries on rather than exiting when a bind does not go its way, so the
+  # unit can be happily "active" with nothing actually listening.
+  #
+  # Deliberately conservative: this only reports a problem when ss ran and
+  # produced a listing that genuinely lacks the port. No ss, or ss returning
+  # nothing at all, means we cannot tell - and a false "nothing is listening"
+  # on a working install would be worse than not looking.
+  command -v ss >/dev/null 2>&1 || return 0
+  local listening
+  listening="$(ss -lun 2>/dev/null)" || return 0
+  [[ -n "${listening}" ]] || return 0
+
+  if ! grep -qE "[:.]${DNS_PORT}([[:space:]]|$)" <<<"${listening}"; then
+    warn "The service is running, but nothing appears to be listening on UDP/${DNS_PORT}."
+    warn "Check the log below and whether something else holds the port."
+    journalctl -u slipstream-server.service -n 20 --no-pager >&2 || true
+  fi
 }
 
 summary() {
@@ -455,8 +660,12 @@ summary() {
   local forwarding="${TARGET}"
   local services="slipstream-server"
   local credentials=""
+  local extras=""
   local handover="    2. Hand the domain above and ${CONF_DIR}/cert.pem to whatever
        connects to this server."
+
+  [[ -n "${FALLBACK}" ]] && extras+="  Non-DNS relay     ${FALLBACK}
+"
   if [[ "${INSTALL_SOCKS}" -eq 1 ]]; then
     forwarding="${TARGET}  (SOCKS5)"
     services="slipstream-server slipstream-socks"
@@ -479,20 +688,88 @@ summary() {
   Forwarding to     ${forwarding}
   Certificate       ${CONF_DIR}/cert.pem
   Cert SHA256       ${fingerprint}
-${credentials}
+${extras}${credentials}
   Next steps
     1. Delegate ${DOMAIN} to this host with an NS record pointing at its
        public IP, and make sure UDP/${DNS_PORT} is reachable.
 ${handover}
+    3. The desktop client is at
+       https://github.com/SpecFlowdev/slipstream-client
 
   Manage the service
     systemctl status ${services}
     journalctl -u slipstream-server -f
+    sudo ./install.sh --uninstall
 
 EOF
 }
 
+# --------------------------------------------------------------------------
+# Uninstall
+# --------------------------------------------------------------------------
+
+uninstall() {
+  [[ "${EUID}" -eq 0 ]] || die "Run as root: sudo ./install.sh --uninstall"
+  detect_tty
+
+  log "Stopping services"
+  local unit
+  for unit in slipstream-server.service slipstream-socks.service; do
+    systemctl disable --now --quiet "${unit}" 2>/dev/null || true
+  done
+
+  rm -f "${UNIT_PATH}" "${SOCKS_UNIT_PATH}"
+  systemctl daemon-reload
+  rm -f "${BIN_DIR}/slipstream-server"
+
+  if [[ -f "${SYSCTL_PATH}" ]]; then
+    rm -f "${SYSCTL_PATH}"
+    sysctl --system >/dev/null 2>&1 || true
+    log "Removed ${SYSCTL_PATH}"
+  fi
+
+  # The certificate is the thing clients pinned. Deleting it means every
+  # configured client has to be handed a new one, so it is never removed
+  # without asking - and the default is to keep it.
+  if [[ -d "${CONF_DIR}" || -d "${STATE_DIR}" ]]; then
+    if confirm "Delete ${CONF_DIR} and ${STATE_DIR}, including the certificate clients pinned? [y/N]" 'N'; then
+      rm -rf "${CONF_DIR}" "${STATE_DIR}"
+      log "Removed configuration and state."
+    else
+      log "Kept ${CONF_DIR} and ${STATE_DIR}."
+    fi
+  fi
+
+  if id -u "${SERVICE_USER}" >/dev/null 2>&1 && [[ ! -d "${CONF_DIR}" ]]; then
+    userdel "${SERVICE_USER}" 2>/dev/null || true
+  fi
+
+  if [[ -f "${RESOLVED_DROPIN}" ]]; then
+    warn "systemd-resolved's stub listener is still disabled by ${RESOLVED_DROPIN}."
+    warn "Remove that file and restart systemd-resolved to put it back."
+  fi
+
+  cat <<EOF
+
+  slipstream-server has been removed.
+
+  Anything left behind is listed above. The firewall rule, if one was added,
+  is left in place - removing it is not this script's call to make.
+
+EOF
+}
+
+# --------------------------------------------------------------------------
+
 main() {
+  case "${1:-}" in
+    -h|--help)     usage; exit 0 ;;
+    -v|--version)  printf 'slipstream-installer %s\n' "${SELF_VERSION}"; exit 0 ;;
+    --uninstall)   uninstall; exit 0 ;;
+    "")            ;;
+    *)             die "Unknown option: $1 (try --help)" ;;
+  esac
+
   preflight
   detect_tty
   detect_arch
@@ -502,6 +779,8 @@ main() {
   install_files
   install_socks
   write_unit
+  tune_sysctl
+  open_firewall
   start_service
   summary
 }
